@@ -1,4 +1,4 @@
-name: Auto Video Generator
+name: Animal Generator Claude
 
 on:
   schedule:
