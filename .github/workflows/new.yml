@@ -1,0 +1,201 @@
+name: Auto Video Generator
+
+on:
+  schedule:
+    # Every 3 hours (8 videos/day). Changed from every 2 hours: your top
+    # retention videos (55-73%) run 37-60s, while your fastest-drop-off
+    # videos (~30%) run 10-15s. Posting slightly less often but keeping
+    # quality/length up tends to protect average retention per video.
+    # Revert to '0 */2 * * *' any time if you'd rather post more often.
+    - cron: '0 */3 * * *'
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: 'Manual topic override (leave empty to pick automatically)'
+        required: false
+        default: ''
+      category:
+        description: 'Force a topic category (animal_intelligence, animal_survival_extreme, animal_emotions_social, weird_animal_facts, ocean_deep_sea). Leave empty for weighted auto-pick.'
+        required: false
+        default: ''
+
+# Prevent overlapping runs. If a previous run is still generating a video,
+# new triggers are skipped (NOT cancelled) so a mid-render job is never killed.
+concurrency:
+  group: auto-video-generation
+  cancel-in-progress: false
+
+jobs:
+  generate-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    permissions:
+      contents: write  # Required to push topic_history.json back to the repo.
+
+    steps:
+      # ── Setup ─────────────────────────────────────────────────────────
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install project dependencies
+        run: uv sync --frozen
+
+      - name: Verify FFmpeg
+        run: ffmpeg -version | head -n 2
+
+      # ── Build config.toml from secrets ────────────────────────────────
+      - name: Build config.toml
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          COVERR_API_KEY: ${{ secrets.COVERR_API_KEY }}
+        run: python scripts/build_config.py
+
+      # ── Pick a topic ──────────────────────────────────────────────────
+      - name: Pick video topic
+        id: topic
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          TOPIC_CATEGORY: ${{ inputs.category }}
+        run: |
+          MANUAL_TOPIC="${{ inputs.topic }}"
+          if [ -n "$MANUAL_TOPIC" ]; then
+            TOPIC="$MANUAL_TOPIC"
+            echo "Using manual topic override: $TOPIC"
+          else
+            TOPIC=$(python scripts/pick_topic.py)
+          fi
+          echo "topic=$TOPIC" >> "$GITHUB_OUTPUT"
+          echo "### 🎬 Chosen Topic" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "> $TOPIC" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Generate the video ────────────────────────────────────────────
+      - name: Generate video
+        id: generate
+        run: |
+          # Create a known task ID so we can find the output files reliably
+          # without parsing CLI stdout (which also streams log output).
+          TASK_ID=$(python -c "import uuid; print(uuid.uuid4())")
+          echo "task_id=$TASK_ID" >> "$GITHUB_OUTPUT"
+          echo "Starting generation for task $TASK_ID ..."
+
+          # Retry up to 3 times: transient failures from the LLM/stock
+          # media APIs (rate limits, timeouts) shouldn't kill the whole run.
+          MAX_ATTEMPTS=3
+          ATTEMPT=1
+          until uv run python cli.py \
+            --task-id "$TASK_ID" \
+            --video-subject "${{ steps.topic.outputs.topic }}" \
+            --video-language en-US \
+            --voice-name "en-US-AndrewNeural-Male" \
+            --video-aspect 9:16 \
+            --paragraph-number 3 \
+            --video-count 1 \
+            --bgm-type random \
+            --bgm-volume 0.15
+          do
+            if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ]; then
+              echo "::error::Generation failed after $MAX_ATTEMPTS attempts"
+              exit 1
+            fi
+            echo "Attempt $ATTEMPT failed, retrying in 30s..."
+            ATTEMPT=$((ATTEMPT + 1))
+            sleep 30
+          done
+
+          # Locate the generated .mp4 file inside the task directory.
+          VIDEO_FILE=$(find "storage/tasks/$TASK_ID" -name "*.mp4" -type f | head -1)
+          echo "video_file=$VIDEO_FILE" >> "$GITHUB_OUTPUT"
+
+          if [ -z "$VIDEO_FILE" ]; then
+            echo "::error::No .mp4 file found in storage/tasks/$TASK_ID"
+            ls -lR "storage/tasks/$TASK_ID" || true
+            exit 1
+          fi
+
+          FILE_SIZE=$(stat --printf='%s' "$VIDEO_FILE" 2>/dev/null || stat -f '%z' "$VIDEO_FILE")
+          FILE_SIZE_MB=$(echo "scale=1; $FILE_SIZE / 1048576" | bc)
+
+          echo "### ✅ Video Generated" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Task ID | \`$TASK_ID\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Video | \`$VIDEO_FILE\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Size | ${FILE_SIZE_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Upload to YouTube ─────────────────────────────────────────────
+      - name: Upload to YouTube
+        id: upload
+        if: steps.generate.outputs.video_file != ''
+        env:
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+          YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+          YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+        run: |
+          TOPIC="${{ steps.topic.outputs.topic }}"
+
+          uv run python scripts/upload_youtube.py \
+            --video-file "${{ steps.generate.outputs.video_file }}" \
+            --title "$TOPIC" \
+            --privacy public
+
+          echo "### 📤 Uploaded to YouTube" >> "$GITHUB_STEP_SUMMARY"
+
+      # ── Upload video as a workflow artifact for debugging on failure ───
+      - name: Upload video artifact (on failure)
+        if: failure() && steps.generate.outputs.video_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: failed-video-${{ steps.generate.outputs.task_id }}
+          path: ${{ steps.generate.outputs.video_file }}
+          retention-days: 3
+
+      # ── Persist topic history ─────────────────────────────────────────
+      - name: Commit topic history
+        # Run even if upload fails — we still want to record the topic
+        # to avoid repeating it on the next run.
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add scripts/topic_history.json
+          # --quiet exits 0 when there's nothing to commit (idempotent).
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: update topic history [skip ci]"
+            # Rebase in case someone pushed between checkout and now.
+            git pull --rebase origin "$(git branch --show-current)"
+            git push
+            echo "✓ Topic history committed and pushed"
+          else
+            echo "No topic history changes to commit"
+          fi
+
+      # ── Final summary ─────────────────────────────────────────────────
+      - name: Summary
+        if: always()
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "  TOPIC:     ${{ steps.topic.outputs.topic }}"
+          echo "  TASK ID:   ${{ steps.generate.outputs.task_id }}"
+          echo "  VIDEO:     ${{ steps.generate.outputs.video_file }}"
+          echo "  GENERATE:  ${{ steps.generate.outcome }}"
+          echo "  UPLOAD:    ${{ steps.upload.outcome }}"
+          echo "=========================================="
