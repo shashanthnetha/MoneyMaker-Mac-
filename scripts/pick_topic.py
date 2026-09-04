@@ -3,12 +3,15 @@
 
 Mode 1 (AI Dynamic - Default):
     Calls the Groq LLM to brainstorm a fresh, viral, trending Short topic
-    in high-engagement niches (AI/Tech, Finance, Mindset, Science), while
-    injecting past history so the AI never repeats an idea.
+    in high-engagement niches (Animals & Nature, AI/Tech, Finance, Mindset,
+    Science), while injecting past history so the AI never repeats an idea.
+    Animals & Nature is weighted as the priority niche: channel analytics
+    show it consistently gets the best retention (55-73%) of anything
+    posted so far, well above the other niches.
 
 Mode 2 (Curated Fallback):
     If the LLM is unreachable or GROQ_API_KEY is not set, picks randomly
-    from a curated 60-topic library.
+    from a curated topic library, using the same category weighting.
 
 The chosen topic is printed to stdout and recorded in topic_history.json.
 """
@@ -33,74 +36,122 @@ HISTORY_FILE = os.environ.get(
 LOOKBACK = 20
 
 # ---------------------------------------------------------------------------
-# Curated backup topics (~60 total) used if LLM call is unavailable.
+# Curated backup topics used if the LLM call is unavailable, grouped by
+# niche with a weight. Weights are based on channel analytics: Animals &
+# Nature (especially intelligence / survival angles) gets by far the best
+# retention, so it's picked far more often than the other niches.
 # ---------------------------------------------------------------------------
-BACKUP_TOPICS: list[str] = [
-    # ── AI & Technology ──────────────────────────────────────────────────
-    "How AI is quietly changing everyday life",
-    "The rise of AI-generated music and art",
-    "Why self-driving cars are taking so long",
-    "How ChatGPT actually works explained simply",
-    "5 AI tools that save hours every week",
-    "The dark side of deepfake technology",
-    "How AI is revolutionizing healthcare diagnosis",
-    "Why quantum computing matters for the future",
-    "The hidden AI behind your social media feed",
-    "How robots are transforming warehouse logistics",
-    "The future of AI in education and learning",
-    "How brain-computer interfaces could change everything",
-    "Why cybersecurity is more important than ever",
-    "The surprising ways AI is used in agriculture",
-    "How 3D printing is reshaping manufacturing",
-    # ── Finance & Wealth ─────────────────────────────────────────────────
-    "5 money habits of self-made millionaires",
-    "Why most people never build real wealth",
-    "The psychology behind impulsive spending",
-    "How compound interest makes you rich over time",
-    "Passive income ideas that actually work in 2025",
-    "The biggest financial mistakes people make in their 20s",
-    "How to build an emergency fund from scratch",
-    "Why the stock market always recovers eventually",
-    "The simple budgeting rule that changed everything",
-    "How inflation quietly destroys your savings",
-    "Why financial literacy should be taught in schools",
-    "The truth about cryptocurrency investing",
-    "How to negotiate a higher salary at your job",
-    "The real cost of subscription services you forgot about",
-    "Why starting to invest early beats investing more later",
-    # ── Self-Improvement & Productivity ──────────────────────────────────
-    "The 2-minute rule that fixes procrastination",
-    "Why waking up at 5 AM will not make you successful",
-    "How to build a habit that actually sticks",
-    "The science of motivation and why willpower fails",
-    "Why reading books changes your brain permanently",
-    "How to stay focused in a world full of distractions",
-    "The Pomodoro technique and why it works so well",
-    "Why journaling is the most underrated productivity tool",
-    "How to stop overthinking and start doing",
-    "The power of saying no to almost everything",
-    "Why your morning routine matters more than you think",
-    "How to learn any new skill in 30 days",
-    "The science of sleep and why 8 hours is non-negotiable",
-    "Why perfectionism is actually holding you back",
-    "How to build unshakable confidence in 90 days",
-    # ── Science & Nature ─────────────────────────────────────────────────
-    "Why the ocean is still mostly unexplored",
-    "How your brain creates dreams while you sleep",
-    "The fascinating science behind black holes",
-    "Why honey never spoils even after thousands of years",
-    "How trees communicate through underground networks",
-    "The science of why music gives you chills",
-    "Why we still cannot predict earthquakes accurately",
-    "How the human body fights viruses without you knowing",
-    "The incredible journey of a single raindrop",
-    "Why some animals can survive in extreme environments",
-    "How your gut bacteria control your mood and health",
-    "The mystery of dark matter and dark energy",
-    "Why the northern lights happen and where to see them",
-    "How volcanoes shaped the world we live in today",
-    "The surprising intelligence of crows and ravens",
-]
+BACKUP_TOPICS_BY_CATEGORY: dict[str, dict] = {
+    "Animals & Nature": {
+        "weight": 45,
+        "topics": [
+            "The surprising intelligence of crows and ravens",
+            "Why some animals can survive in extreme environments",
+            "How octopuses solve puzzles no one taught them",
+            "Why elephants never forget a face",
+            "Dolphins call each other by name",
+            "How chimps outsmart humans in memory tests",
+            "Why crows can recognize human faces for years",
+            "The frog that survives being frozen solid",
+            "How camels survive weeks without water",
+            "Animals that live inside active volcanoes",
+            "How tardigrades survive the vacuum of space",
+            "The bird that flies non-stop for 10 days straight",
+            "How penguins survive Antarctic winters in total darkness",
+            "The desert fox that never drinks water in its life",
+            "Elephants that grieve for years after losing family",
+            "How orcas carry their dead calves for weeks",
+            "Animals that form lifelong friendships across species",
+            "Why crows hold something like funerals",
+            "The animal that can regrow its entire brain",
+            "The parasite that controls its host's mind",
+            "The creature that has 3 hearts and blue blood",
+            "The lizard that shoots blood from its eyes",
+            "Creatures found at the deepest point of the ocean",
+            "Why giant squids have the biggest eyes on Earth",
+            "The shark that has been alive for 400 years",
+            "Deep sea creatures that make their own light",
+            "How trees communicate through underground networks",
+            "Why honey never spoils even after thousands of years",
+        ],
+    },
+    "AI & Technology": {
+        "weight": 18,
+        "topics": [
+            "How AI is quietly changing everyday life",
+            "The rise of AI-generated music and art",
+            "Why self-driving cars are taking so long",
+            "How ChatGPT actually works explained simply",
+            "5 AI tools that save hours every week",
+            "The dark side of deepfake technology",
+            "How AI is revolutionizing healthcare diagnosis",
+            "Why quantum computing matters for the future",
+            "The hidden AI behind your social media feed",
+            "How robots are transforming warehouse logistics",
+            "The future of AI in education and learning",
+            "How brain-computer interfaces could change everything",
+            "Why cybersecurity is more important than ever",
+            "The surprising ways AI is used in agriculture",
+            "How 3D printing is reshaping manufacturing",
+        ],
+    },
+    "Finance & Wealth": {
+        "weight": 13,
+        "topics": [
+            "5 money habits of self-made millionaires",
+            "Why most people never build real wealth",
+            "The psychology behind impulsive spending",
+            "How compound interest makes you rich over time",
+            "Passive income ideas that actually work in 2025",
+            "The biggest financial mistakes people make in their 20s",
+            "How to build an emergency fund from scratch",
+            "Why the stock market always recovers eventually",
+            "The simple budgeting rule that changed everything",
+            "How inflation quietly destroys your savings",
+            "Why financial literacy should be taught in schools",
+            "The truth about cryptocurrency investing",
+            "How to negotiate a higher salary at your job",
+            "The real cost of subscription services you forgot about",
+            "Why starting to invest early beats investing more later",
+        ],
+    },
+    "Self-Improvement & Productivity": {
+        "weight": 12,
+        "topics": [
+            "The 2-minute rule that fixes procrastination",
+            "Why waking up at 5 AM will not make you successful",
+            "How to build a habit that actually sticks",
+            "The science of motivation and why willpower fails",
+            "Why reading books changes your brain permanently",
+            "How to stay focused in a world full of distractions",
+            "The Pomodoro technique and why it works so well",
+            "Why journaling is the most underrated productivity tool",
+            "How to stop overthinking and start doing",
+            "The power of saying no to almost everything",
+            "Why your morning routine matters more than you think",
+            "How to learn any new skill in 30 days",
+            "The science of sleep and why 8 hours is non-negotiable",
+            "Why perfectionism is actually holding you back",
+            "How to build unshakable confidence in 90 days",
+        ],
+    },
+    "Science & Space": {
+        "weight": 12,
+        "topics": [
+            "Why the ocean is still mostly unexplored",
+            "How your brain creates dreams while you sleep",
+            "The fascinating science behind black holes",
+            "The science of why music gives you chills",
+            "Why we still cannot predict earthquakes accurately",
+            "How the human body fights viruses without you knowing",
+            "The incredible journey of a single raindrop",
+            "How your gut bacteria control your mood and health",
+            "The mystery of dark matter and dark energy",
+            "Why the northern lights happen and where to see them",
+            "How volcanoes shaped the world we live in today",
+        ],
+    },
+}
 
 
 def load_history() -> list[dict]:
@@ -136,7 +187,10 @@ def generate_topic_with_ai(recent_topics: list[str]) -> str | None:
     recent_str = "\n- ".join(recent_topics[-15:]) if recent_topics else "None"
     prompt = (
         "You are an elite YouTube Shorts growth strategist. Brainstorm 1 viral, high-CTR Short video topic.\n"
-        "Niches to choose from (pick 1):\n"
+        "Niches to choose from, weighted by past channel performance:\n"
+        "- Animals & Nature: intelligence, survival in extreme environments, wildlife behavior and emotion "
+        "(PRIORITY NICHE — this channel's retention on animal topics is 55-73%, far above every other niche, "
+        "so pick this niche roughly half the time)\n"
         "- AI & Future Technology\n"
         "- Smart Money, Investing & Wealth Psychology\n"
         "- High-Performance Habits & Productivity Hacks\n"
@@ -182,6 +236,35 @@ def generate_topic_with_ai(recent_topics: list[str]) -> str | None:
     return None
 
 
+def pick_from_backup(recent_topics: list[str], history: list[dict]) -> str:
+    """Weighted pick from the curated backup categories, avoiding recent repeats."""
+    recent_set = set(recent_topics)
+    categories = list(BACKUP_TOPICS_BY_CATEGORY.items())
+
+    # Try a weighted category pick a few times, preferring a topic that
+    # hasn't been used recently.
+    for _ in range(20):
+        names = [name for name, _ in categories]
+        weights = [data["weight"] for _, data in categories]
+        cat_name = random.choices(names, weights=weights, k=1)[0]
+        cat_topics = BACKUP_TOPICS_BY_CATEGORY[cat_name]["topics"]
+        available = [t for t in cat_topics if t not in recent_set]
+        if available:
+            chosen = random.choice(available)
+            print(f"[pick_topic] Picked from backup category '{cat_name}': {chosen}", file=sys.stderr)
+            return chosen
+
+    # Fallback: every topic in every category has been used recently
+    # (small bank, high posting frequency) — ignore the recent-history
+    # filter but still avoid an exact repeat of the last topic.
+    last_topic = history[-1]["topic"] if history else ""
+    all_topics = [t for cat in BACKUP_TOPICS_BY_CATEGORY.values() for t in cat["topics"]]
+    available = [t for t in all_topics if t != last_topic]
+    chosen = random.choice(available)
+    print(f"[pick_topic] All backup topics used recently, picked anyway: {chosen}", file=sys.stderr)
+    return chosen
+
+
 def pick_topic() -> str:
     """Select or generate a non-repeating topic."""
     history = load_history()
@@ -192,16 +275,8 @@ def pick_topic() -> str:
     if ai_topic:
         chosen = ai_topic
     else:
-        # Attempt 2: Fallback to curated static list
-        recent_set = set(recent_topics)
-        available = [t for t in BACKUP_TOPICS if t not in recent_set]
-
-        if not available:
-            last_topic = history[-1]["topic"] if history else ""
-            available = [t for t in BACKUP_TOPICS if t != last_topic]
-
-        chosen = random.choice(available)
-        print(f"[pick_topic] Picked from backup curated list: {chosen}", file=sys.stderr)
+        # Attempt 2: Fallback to curated, weighted category list
+        chosen = pick_from_backup(recent_topics, history)
 
     # Persist in history
     history.append(
