@@ -47,8 +47,14 @@ jobs:
       - name: Install project dependencies
         run: uv sync --frozen
 
-      - name: Verify FFmpeg
-        run: ffmpeg -version | head -n 2
+      # FIX: actually install ffmpeg (it was missing on the runner) and fail
+      # loudly if it is not available. ffprobe is needed for the audio check.
+      - name: Install and verify FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
 
       # ── Build config.toml from secrets ────────────────────────────────
       - name: Build config.toml
@@ -64,8 +70,9 @@ jobs:
         id: topic
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # FIX: pass through env instead of pasting into the shell script.
+          MANUAL_TOPIC: ${{ inputs.topic }}
         run: |
-          MANUAL_TOPIC="${{ inputs.topic }}"
           if [ -n "$MANUAL_TOPIC" ]; then
             TOPIC="$MANUAL_TOPIC"
             echo "Using manual topic override: $TOPIC"
@@ -80,6 +87,9 @@ jobs:
       # ── Generate the video ────────────────────────────────────────────
       - name: Generate video
         id: generate
+        env:
+          # FIX: pass through env instead of pasting into the shell script.
+          TOPIC: ${{ steps.topic.outputs.topic }}
         run: |
           # Create a known task ID so we can find the output files reliably
           # without parsing CLI stdout (which also streams log output).
@@ -89,7 +99,7 @@ jobs:
 
           uv run python cli.py \
             --task-id "$TASK_ID" \
-            --video-subject "${{ steps.topic.outputs.topic }}" \
+            --video-subject "$TOPIC" \
             --video-language en-US \
             --voice-name "en-US-AndrewNeural-Male" \
             --video-aspect 9:16 \
@@ -98,13 +108,26 @@ jobs:
             --bgm-type random \
             --bgm-volume 0.15
 
-          # Locate the generated .mp4 file inside the task directory.
-          VIDEO_FILE=$(find "storage/tasks/$TASK_ID" -name "*.mp4" -type f | head -1)
+          # FIX (main bug): always use final-1.mp4 (voice + subtitles + BGM).
+          # The old `find ... | head -1` could return combined-1.mp4, which is
+          # only the silent stock-clip stitch with no voice or subtitles.
+          VIDEO_FILE="storage/tasks/$TASK_ID/final-1.mp4"
+          if [ ! -f "$VIDEO_FILE" ]; then
+            VIDEO_FILE=""
+          fi
           echo "video_file=$VIDEO_FILE" >> "$GITHUB_OUTPUT"
 
           if [ -z "$VIDEO_FILE" ]; then
-            echo "::error::No .mp4 file found in storage/tasks/$TASK_ID"
+            echo "::error::final-1.mp4 not found in storage/tasks/$TASK_ID"
             ls -lR "storage/tasks/$TASK_ID" || true
+            exit 1
+          fi
+
+          # FIX: refuse to continue if the video has no audio track,
+          # so a silent video can never be uploaded publicly.
+          AUDIO_STREAMS=$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 "$VIDEO_FILE" | wc -l)
+          if [ "$AUDIO_STREAMS" -lt 1 ]; then
+            echo "::error::$VIDEO_FILE has no audio track, refusing to upload"
             exit 1
           fi
 
@@ -118,6 +141,7 @@ jobs:
           echo "| Task ID | \`$TASK_ID\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Video | \`$VIDEO_FILE\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Size | ${FILE_SIZE_MB} MB |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Audio streams | ${AUDIO_STREAMS} |" >> "$GITHUB_STEP_SUMMARY"
 
       # ── Upload to YouTube ─────────────────────────────────────────────
       - name: Upload to YouTube
@@ -127,11 +151,12 @@ jobs:
           YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
           YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
           YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+          # FIX: pass through env instead of pasting into the shell script.
+          TOPIC: ${{ steps.topic.outputs.topic }}
+          VIDEO_FILE: ${{ steps.generate.outputs.video_file }}
         run: |
-          TOPIC="${{ steps.topic.outputs.topic }}"
-
           uv run python scripts/upload_youtube.py \
-            --video-file "${{ steps.generate.outputs.video_file }}" \
+            --video-file "$VIDEO_FILE" \
             --title "$TOPIC" \
             --privacy public
 
@@ -160,12 +185,18 @@ jobs:
       # ── Final summary ─────────────────────────────────────────────────
       - name: Summary
         if: always()
+        env:
+          TOPIC: ${{ steps.topic.outputs.topic }}
+          TASK_ID: ${{ steps.generate.outputs.task_id }}
+          VIDEO_FILE: ${{ steps.generate.outputs.video_file }}
+          GENERATE_OUTCOME: ${{ steps.generate.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
         run: |
           echo ""
           echo "=========================================="
-          echo "  TOPIC:     ${{ steps.topic.outputs.topic }}"
-          echo "  TASK ID:   ${{ steps.generate.outputs.task_id }}"
-          echo "  VIDEO:     ${{ steps.generate.outputs.video_file }}"
-          echo "  GENERATE:  ${{ steps.generate.outcome }}"
-          echo "  UPLOAD:    ${{ steps.upload.outcome }}"
+          echo "  TOPIC:     $TOPIC"
+          echo "  TASK ID:   $TASK_ID"
+          echo "  VIDEO:     $VIDEO_FILE"
+          echo "  GENERATE:  $GENERATE_OUTCOME"
+          echo "  UPLOAD:    $UPLOAD_OUTCOME"
           echo "=========================================="
