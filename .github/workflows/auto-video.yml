@@ -4,7 +4,7 @@ on:
   schedule:
     # Every 2 hours. Adjust the cron expression to change frequency.
     # Tip: '0 */4 * * *' = every 4 hours, '0 */6 * * *' = every 6 hours.
-    - cron: '0 */1 * * *'
+    - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
       topic:
