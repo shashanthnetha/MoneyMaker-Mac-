@@ -30,11 +30,13 @@ jobs:
       - run: uv sync --frozen
       - run: PYTHONPATH=scripts uv run python -m animal_topics.cli restore
       - run: PYTHONPATH=scripts uv run python -m animal_topics.cli discover --max-new ${{ inputs.max_new || 60 }}
+        timeout-minutes: 15
       - name: Enrich
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: PYTHONPATH=scripts uv run python -m animal_topics.cli enrich --batch ${{ inputs.enrich_batch || 100 }}
+        timeout-minutes: 45
       - run: PYTHONPATH=scripts uv run python -m animal_topics.cli migrate
       - name: Stats
         env:
