@@ -1,11 +1,12 @@
 """Small stdlib-only HTTP helpers."""
-import json, sys, time, urllib.parse, urllib.request, urllib.error
+import json, re, sys, time, urllib.parse, urllib.request, urllib.error
 UA = "MoneyMakerAnimalBot/1.0 (https://github.com/Anudeep-Reddy07/MoneyMaker-Automation)"
 
 def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,5,10), attempts=None):
     hdr = {"User-Agent": UA}; hdr.update(headers or {})
     if attempts is None:
         attempts = len(backoff) + 1
+    attempts = max(attempts, 5)
     delays = (0,) + tuple(backoff[: max(0, attempts - 1)])
     host = urllib.parse.urlparse(url).netloc
     for i, delay in enumerate(delays):
@@ -39,6 +40,15 @@ def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,
                 + (f" body={raw_body[:300]}" if raw_body else ""),
                 file=sys.stderr,
             )
+            if status == 429 and i < len(delays) - 1:
+                wait = None
+                match = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)", raw_body, re.I)
+                if match:
+                    wait = float(match.group(1)) / 1000 if match.group(2).lower() == "ms" else float(match.group(1))
+                if wait is None:
+                    wait = (5, 15, 30, 45)[min(i, 3)]
+                time.sleep(wait + 1)
+                continue
             if i == len(delays) - 1:
                 return None
     return None

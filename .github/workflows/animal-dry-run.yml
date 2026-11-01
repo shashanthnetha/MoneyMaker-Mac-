@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       count:
-        default: '20'
+        default: '5'
 concurrency:
   group: auto-video-generation-animal
   cancel-in-progress: false

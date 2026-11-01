@@ -16,6 +16,17 @@ PAGE_SIZE = 200
 MAX_PAGES = 6
 WALL_CLOCK_SECONDS = 6 * 60
 LADDERS = {"living": [20, 10, 5, 3], "extinct": [15, 8, 4, 3]}
+HUMAN_LINEAGE_TERMS = (
+    "neanderthal",
+    "denisovan",
+    "heidelberg man",
+    "caveman",
+    "cave man",
+    "hominin",
+    "hominid",
+    "homo ",
+    "human",
+)
 LIVING_QIDS = ("Q7432", "Q34740", "Q729", "Q237350", "Q23038290", "Q15978631")
 EXPECTED_LABELS = {
     "Q7432": "species",
@@ -50,6 +61,13 @@ def _bindings(data):
 
 def _value(binding, name):
     return binding.get(name, {}).get("value")
+
+
+def is_human_lineage(scientific_name, common_name, wikipedia_title):
+    if (scientific_name or "").casefold().startswith("homo "):
+        return True
+    text = " ".join((common_name or "", wikipedia_title or "")).casefold()
+    return any(term in text for term in HUMAN_LINEAGE_TERMS)
 
 
 def ranked_query(kind, minimum=3, limit=PAGE_SIZE, offset=0):
@@ -144,7 +162,8 @@ def validate_labels(fetch=get_json):
     accepted_labels = {
         qid: {expected.casefold()} for qid, expected in EXPECTED_LABELS.items()
     }
-    accepted_labels["Q729"].add("animal")
+    accepted_labels["Q729"].update(("animal", "animalia"))
+    accepted_labels["Q237350"].update(("extinct", "extinct species"))
     for qid, expected in EXPECTED_LABELS.items():
         actual = (
             data.get("entities", {})
@@ -166,6 +185,8 @@ def _insert(conn, row, title, extinct, source, pageview_fetch=get_json, common_n
         return None
     common = common_name or row.get("name") or re.sub(r"\s+\([^)]*\)$", "", title)
     sci = row.get("sci")
+    if is_human_lineage(sci, common, title):
+        return None
     if sci and common.casefold() == sci.casefold():
         return None
     conn.execute(
