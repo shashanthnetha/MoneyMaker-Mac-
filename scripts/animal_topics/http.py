@@ -48,11 +48,24 @@ def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,
                     "_http_error": status,
                     "_raw_body": raw_body,
                 }
-            if status == 429 and i < len(delays) - 1:
+            if status in (400, 404):
+                return {
+                    "_http_error": status,
+                    "_raw_body": raw_body,
+                }
+            if status == 429:
                 wait = None
                 match = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)", raw_body, re.I)
                 if match:
                     wait = float(match.group(1)) / 1000 if match.group(2).lower() == "ms" else float(match.group(1))
+                if "tokens per day" in raw_body.casefold() or "(tpd)" in raw_body.casefold() or (wait is not None and wait > 90):
+                    return {
+                        "_http_error": 429,
+                        "_raw_body": raw_body,
+                        "_quota_exhausted": True,
+                    }
+                if i == len(delays) - 1:
+                    return None
                 if wait is None:
                     wait = (5, 15, 30, 45)[min(i, 3)]
                 time.sleep(wait + 1)
@@ -67,5 +80,13 @@ def get_json(url, headers=None, params=None, timeout=30, attempts=None):
         url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
     return _request(url, headers=headers, timeout=timeout, attempts=attempts)
 
-def post_json(url, body, headers=None, timeout=30, backoff=(2,5,10)):
-    return _request(url, "POST", json.dumps(body).encode(), {"Content-Type":"application/json", **(headers or {})}, timeout, backoff)
+def post_json(url, body, headers=None, timeout=30, backoff=(2,5,10), attempts=None):
+    return _request(
+        url,
+        "POST",
+        json.dumps(body).encode(),
+        {"Content-Type":"application/json", **(headers or {})},
+        timeout,
+        backoff,
+        attempts,
+    )

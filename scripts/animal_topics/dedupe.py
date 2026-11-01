@@ -1,4 +1,4 @@
-import difflib, sys
+import difflib, os, sys
 from .db import norm_title
 
 def _jaccard(a,b):
@@ -29,4 +29,11 @@ def _default_judge(facts,candidates):
     from .groq import call
     stored='\n'.join(f"- {x['fact_text']}" for x in facts)
     numbered='\n'.join(f"{i+1}. {x.get('fact','')}" for i,x in enumerate(candidates))
-    return call(f'ALREADY STORED FACTS:\n{stored}\nSURVIVOR FACTS:\n{numbered}\nReturn JSON {{"duplicates":[indices]}} listing survivor indices that repeat any stored or each other fact.') or {}
+    result = call(
+        f'ALREADY STORED FACTS:\n{stored}\nSURVIVOR FACTS:\n{numbered}\nReturn JSON {{"duplicates":[indices]}} listing survivor indices that repeat any stored or each other fact.',
+        return_metadata=True,
+        model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+    )
+    if isinstance(result, dict) and result.get("error") == "quota_exhausted":
+        return {"_groq_quota_exhausted": True}
+    return result.get("result") if isinstance(result, dict) else {}

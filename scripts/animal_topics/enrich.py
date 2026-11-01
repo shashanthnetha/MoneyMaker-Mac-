@@ -99,7 +99,7 @@ def _prompt(row, text):
     return f"""Animal: {row["common_name"]}
 Extinct: {bool(row["is_extinct"])}
 SOURCE TEXT:
-{text}
+{text[:900]}
 
 Allowed classes: Mammal, Bird, Reptile, Amphibian, Fish, Insect, Arachnid, Crustacean, Mollusc, Cephalopod, Cnidarian, Dinosaur, Other Invertebrate.
 Allowed habitats: Aquatic, Terrestrial, Aerial.
@@ -321,7 +321,11 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
                     if remaining > 0:
                         sleeper(remaining)
                 last_groq_start = clock()
-                metadata = call(_prompt(row, text), return_metadata=True)
+                metadata = call(
+                    _prompt(row, text),
+                    return_metadata=True,
+                    model=os.environ.get("GROQ_ENRICH_MODEL", "llama-3.1-8b-instant"),
+                )
                 last_groq_status = metadata.get("status")
                 if metadata.get("error") == "auth_error":
                     print(
@@ -330,6 +334,12 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
                         file=sys.stderr,
                     )
                     return
+                if metadata.get("error") == "quota_exhausted":
+                    print(
+                        "::warning::Groq daily token quota exhausted; remaining species will be enriched in a later run.",
+                        file=sys.stderr,
+                    )
+                    break
                 reason = metadata.get("error")
                 if reason:
                     _failure(conn, row, reason, metadata)

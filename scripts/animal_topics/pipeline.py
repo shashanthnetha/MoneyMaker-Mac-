@@ -5,6 +5,8 @@ from .groq import call
 from .candidates import clean_title,valid_title,parse_candidates,is_taxonomy_fact,choose_by_interest
 from .dedupe import survivors
 
+_QUOTA_LOGGED = False
+
 def match_species(conn,title):
     best=None
     for row in conn.execute('SELECT * FROM species'):
@@ -31,6 +33,7 @@ ALREADY COVERED FACTS (do not repeat or rephrase):
 6. If the animal is extinct, the title must contain one of: extinct, prehistoric, ancient, lost, last, fossil, "ice age", dinosaur; and the fact sentence should mention a living relative if the source text names one.'''
 
 def _pick_on_conn(conn,env):
+    global _QUOTA_LOGGED
     override=env.get('MANUAL_TOPIC_OVERRIDE','').strip(); species=None; fact=None; manual=0
     if override:
         title=override; species=match_species(conn,title); manual=1
@@ -41,7 +44,15 @@ def _pick_on_conn(conn,env):
             if not species: break
             covered=[]
             for _ in range(3):
-                result=call(candidate_prompt(conn,species,covered)); candidates=[]
+                metadata=call(candidate_prompt(conn,species,covered), return_metadata=True,
+                              model=os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"))
+                if metadata.get("error") == "quota_exhausted":
+                    if not _QUOTA_LOGGED:
+                        print("groq quota exhausted: using fallback title", file=sys.stderr)
+                        _QUOTA_LOGGED = True
+                    fact = None
+                    break
+                result=metadata.get("result") or {}; candidates=[]
                 for item in parse_candidates(result):
                     if is_taxonomy_fact(item.get('fact')):
                         continue
@@ -55,6 +66,8 @@ def _pick_on_conn(conn,env):
                     title=fact['title']; break
                 covered.extend(x.get('fact','') for x in candidates)
             if fact: break
+            if metadata.get("error") == "quota_exhausted":
+                break
             failed.append(species['id'])
         if not fact:
             species=select_species(conn,env.get('TOPIC_CATEGORY') or None)

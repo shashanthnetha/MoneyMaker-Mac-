@@ -34,14 +34,15 @@ def main(argv=None):
             conn.execute("UPDATE topics SET status='failed',updated_at=datetime('now') WHERE id=? AND status='reserved'",(args.topic_id,)); conn.commit()
         elif args.command=='dry-run':
             memory=sqlite3.connect(':memory:'); conn.backup(memory); memory.row_factory=sqlite3.Row
-            print('| # | Species | Extinct | Groups | Fact | Title |'); print('|---|---|---|---|---|---|')
+            print('| # | Species | Extinct | Groups | Fact | Title | Source |', flush=True); print('|---|---|---|---|---|---|', flush=True)
             dryenv=dict(os.environ); dryenv.pop('ANIMAL_TOPIC_ID_FILE',None)
             for i in range(args.count):
                 try:
                     title=pick_for_connection(memory,dryenv); topic=memory.execute('SELECT * FROM topics ORDER BY id DESC LIMIT 1').fetchone(); species=memory.execute('SELECT * FROM species WHERE id=?',(topic['species_id'],)).fetchone() if topic['species_id'] else None
                     groups=', '.join(x['name'] for x in memory.execute('SELECT g.name FROM groups g JOIN species_groups sg ON sg.group_id=g.id WHERE sg.species_id=?',(species['id'],))) if species else ''
-                    fact=memory.execute('SELECT fact_text FROM facts WHERE id=?',(topic['fact_id'],)).fetchone() if topic['fact_id'] else None
-                    print(f"| {i+1} | {species['common_name'] if species else ''} | {'Yes' if species and species['is_extinct'] else 'No'} | {groups} | {fact['fact_text'] if fact else ''} | {title} |")
+                    fact=memory.execute('SELECT fact_text, fact_key FROM facts WHERE id=?',(topic['fact_id'],)).fetchone() if topic['fact_id'] else None
+                    source = 'fallback' if fact and fact['fact_key'].startswith('template-') else 'AI'
+                    print(f"| {i+1} | {species['common_name'] if species else ''} | {'Yes' if species and species['is_extinct'] else 'No'} | {groups} | {fact['fact_text'] if fact else ''} | {title} | {source} |", flush=True)
                 except Exception as exc:
                     print(f'dry-run stopped: {exc}',file=sys.stderr); break
             memory.close()
