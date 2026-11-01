@@ -5,6 +5,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import re
 
 from .db import CLASSES, HABITATS
 from .discovery import is_human_lineage
@@ -105,6 +106,64 @@ Allowed habitats: Aquatic, Terrestrial, Aerial.
 Example: {{"classes":["Mammal"],"habitats":["Terrestrial"],"visual_keywords":["african lion","lion pride savanna"]}}
 Living species visual_keywords must include the common name plus up to two closely related real search terms. Extinct species must never use the species name; use a closest living relative, museum skeleton, fossil, or similar real stock-footage subjects.
 Return ONLY the JSON object"""
+
+
+INTERESTING_HEADINGS = (
+    "behaviour", "behavior", "ecology", "diet", "feeding", "hunting",
+    "predation", "reproduction", "breeding", "life cycle", "description",
+    "anatomy", "physiology", "senses", "communication", "intelligence",
+    "adaptation", "defence", "defense", "habitat", "lifespan", "social",
+)
+
+
+def build_wiki_text(full_text):
+    """Keep the lead and behavior-rich sections within the prompt budget."""
+    lines = full_text.splitlines()
+    first_heading = next(
+        (index for index, line in enumerate(lines) if re.match(r"^==+\s*(.+?)\s*==+$", line)),
+        len(lines),
+    )
+    lead = "\n".join(lines[:first_heading]).strip()[:900]
+    sections = []
+    index = first_heading
+    while index < len(lines):
+        match = re.match(r"^==+\s*(.+?)\s*==+$", lines[index])
+        if not match:
+            index += 1
+            continue
+        heading = match.group(1).strip()
+        end = index + 1
+        while end < len(lines) and not re.match(r"^==+\s*(.+?)\s*==+$", lines[end]):
+            end += 1
+        if any(term in heading.casefold() for term in INTERESTING_HEADINGS):
+            sections.append(f"{lines[index]}\n" + "\n".join(lines[index + 1:end]).strip()[:900])
+        index = end
+    selected = lead
+    for section in sections:
+        candidate = f"{selected}\n\n{section}".strip()
+        if len(candidate) > 5500:
+            break
+        selected = candidate
+    return selected if len(selected) >= 1500 else full_text[:5500]
+
+
+def _fetch_article(title):
+    data = get_json(
+        "https://en.wikipedia.org/w/api.php",
+        params={
+            "action": "query",
+            "prop": "extracts",
+            "explaintext": "1",
+            "redirects": "1",
+            "format": "json",
+            "titles": title,
+        },
+    )
+    if data is None:
+        return None, None
+    pages = data.get("query", {}).get("pages", {})
+    full_text = next(iter(pages.values()), {}).get("extract", "")
+    return full_text, build_wiki_text(full_text)
 
 
 def _pexels_search(api_key, query, max_attempts=4):
@@ -215,6 +274,25 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
         conn.execute("INSERT INTO meta(key,value) VALUES('enrich_reset_v3','1')")
     conn.commit()
 
+    if not conn.execute("SELECT 1 FROM meta WHERE key='text_refresh_v1'").fetchone():
+        refresh_rows = conn.execute(
+            "SELECT id, wikipedia_title, wiki_text FROM species WHERE enrichment_status='done'"
+        ).fetchall()
+        for index, row in enumerate(refresh_rows):
+            if index:
+                time.sleep(0.3)
+            try:
+                _, refreshed = _fetch_article(row["wikipedia_title"])
+                if refreshed is not None:
+                    conn.execute(
+                        "UPDATE species SET wiki_text=? WHERE id=?",
+                        (refreshed, row["id"]),
+                    )
+            except Exception:
+                continue
+        conn.execute("INSERT INTO meta(key,value) VALUES('text_refresh_v1','1')")
+        conn.commit()
+
     if os.getenv("GROQ_API_KEY"):
         rows = conn.execute(
             """SELECT * FROM species
@@ -226,29 +304,16 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
         last_groq_status = None
         for row in rows:
             try:
-                data = get_json(
-                    "https://en.wikipedia.org/w/api.php",
-                    params={
-                        "action": "query",
-                        "prop": "extracts",
-                        "explaintext": "1",
-                        "exchars": "2500",
-                        "redirects": "1",
-                        "format": "json",
-                        "titles": row["wikipedia_title"],
-                    },
-                )
-                if data is None:
+                full_text, text = _fetch_article(row["wikipedia_title"])
+                if full_text is None:
                     _failure(conn, row, "http_error", {})
                     continue
-                pages = data.get("query", {}).get("pages", {})
-                text = next(iter(pages.values()), {}).get("extract", "")
-                if len(text) < 400:
+                if len(full_text) < 400:
                     _failure(
                         conn,
                         row,
                         "empty_content",
-                        {"raw_content": text, "finish_reason": None},
+                        {"raw_content": full_text, "finish_reason": None},
                     )
                     continue
                 if last_groq_start is not None and last_groq_status in (200, 429):

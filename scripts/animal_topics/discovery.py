@@ -278,6 +278,10 @@ def _animal_rows(rows, kind, fetch):
 
 def discover(conn, max_new, wishlist_path=None, fetch=get_json, clock=time.monotonic):
     started = clock()
+    pool_size = conn.execute("SELECT COUNT(*) FROM species").fetchone()[0]
+    if pool_size >= 2000:
+        print(f"discovery skipped: species pool already has {pool_size} entries", file=sys.stderr)
+        return
     validate_labels(fetch)
     if wishlist_path:
         apply(conn, wishlist_path)

@@ -2,7 +2,7 @@ import os,re,sys
 from .db import connect,restore,now_utc,norm_title,fmt_id
 from .selection import select_species
 from .groq import call
-from .candidates import clean_title,valid_title,parse_candidates
+from .candidates import clean_title,valid_title,parse_candidates,is_taxonomy_fact,choose_by_interest
 from .dedupe import survivors
 
 def match_species(conn,title):
@@ -23,10 +23,12 @@ SOURCE TEXT:
 {species["wiki_text"]}
 ALREADY COVERED FACTS (do not repeat or rephrase):
 {facts}
-1. Return JSON {{"candidates":[{{"fact":"...","fact_key":"...","title":"..."}}, ...]}} with exactly 8 candidates sorted by best viral potential first.
+1. Return JSON {{"candidates":[{{"fact":"...","fact_key":"...","title":"...","interest":N}}, ...]}} with exactly 8 candidates.
 2. Every fact must be directly supported by the SOURCE TEXT. Do not use any number that does not appear in the SOURCE TEXT. Do not invent abilities.
-3. fact = one sentence. fact_key = 3–6 lowercase words naming the core fact. title = 7–12 words, states the fact, contains the animal's name, no emojis, no quotes, no markdown.
-4. If the animal is extinct, the title must contain one of: extinct, prehistoric, ancient, lost, last, fossil, "ice age", dinosaur; and the fact sentence should mention a living relative if the source text names one.'''
+3. Prefer facts about abilities, behaviour, hunting, survival, senses, intelligence, reproduction, extreme records or strange biology. Do NOT write about classification, naming/etymology, taxonomic relatives, geographic range or distribution, or plain size.
+4. fact = one sentence. fact_key = 3–6 lowercase words naming the core fact. interest = an integer 1–10: how surprising and fun this is for a general audience.
+5. title = 7–12 words, Title Case, written as a curiosity hook (for example "Why the X can ...", "How the X ...", "The X That ..."), states or clearly hints at the fact, contains the animal's name, no emojis, no quotes, no markdown.
+6. If the animal is extinct, the title must contain one of: extinct, prehistoric, ancient, lost, last, fossil, "ice age", dinosaur; and the fact sentence should mention a living relative if the source text names one.'''
 
 def _pick_on_conn(conn,env):
     override=env.get('MANUAL_TOPIC_OVERRIDE','').strip(); species=None; fact=None; manual=0
@@ -41,11 +43,16 @@ def _pick_on_conn(conn,env):
             for _ in range(3):
                 result=call(candidate_prompt(conn,species,covered)); candidates=[]
                 for item in parse_candidates(result):
+                    if is_taxonomy_fact(item.get('fact')):
+                        continue
                     title=clean_title(item.get('title',''))
                     if valid_title(title,species['common_name'],bool(species['is_extinct'])):
                         item['title']=title; candidates.append(item)
                 accepted=survivors(conn,species['id'],candidates)
-                if accepted: fact=accepted[0]; title=fact['title']; break
+                if accepted:
+                    fact=choose_by_interest(accepted)
+                    print(f"chosen candidate interest: {fact.get('interest', 0) if isinstance(fact.get('interest', 0), (int, float)) else 0}", file=sys.stderr)
+                    title=fact['title']; break
                 covered.extend(x.get('fact','') for x in candidates)
             if fact: break
             failed.append(species['id'])
