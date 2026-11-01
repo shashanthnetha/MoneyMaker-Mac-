@@ -15,6 +15,7 @@ WIKIDATA_API = "https://www.wikidata.org/w/api.php"
 PAGE_SIZE = 200
 MAX_PAGES = 6
 WALL_CLOCK_SECONDS = 6 * 60
+LADDERS = {"living": [20, 10, 5, 3], "extinct": [15, 8, 4, 3]}
 LIVING_QIDS = ("Q7432", "Q34740", "Q729", "Q237350", "Q23038290", "Q15978631")
 EXPECTED_LABELS = {
     "Q7432": "species",
@@ -51,30 +52,28 @@ def _value(binding, name):
     return binding.get(name, {}).get("value")
 
 
-def ranked_query(kind, limit=PAGE_SIZE, offset=0):
+def ranked_query(kind, minimum=3, limit=PAGE_SIZE, offset=0):
     if kind == "living":
-        body = f"""SELECT ?taxon ?name ?sci ?links WHERE {{
+        body = f"""SELECT ?taxon ?links WHERE {{
   ?taxon wdt:P105 wd:Q7432 ; wikibase:sitelinks ?links .
-  FILTER(?links >= 3)
-  OPTIONAL {{ ?taxon wdt:P1843 ?name . FILTER(LANG(?name) = "en") }}
-  OPTIONAL {{ ?taxon wdt:P225 ?sci }}
-}} ORDER BY DESC(?links) ?taxon ?name LIMIT {limit} OFFSET {offset}"""
+  FILTER(?links >= {minimum})
+}} ORDER BY DESC(?links) ?taxon LIMIT {limit} OFFSET {offset}"""
     else:
-        body = f"""SELECT ?taxon ?name ?sci ?links WHERE {{
+        body = f"""SELECT ?taxon ?links WHERE {{
   {{ ?taxon wdt:P141 wd:Q237350 }} UNION {{ ?taxon wdt:P31 wd:Q23038290 }}
   ?taxon wdt:P105 ?rank . FILTER(?rank IN (wd:Q7432, wd:Q34740))
-  ?taxon wikibase:sitelinks ?links . FILTER(?links >= 3)
-  OPTIONAL {{ ?taxon wdt:P1843 ?name . FILTER(LANG(?name) = "en") }}
-  OPTIONAL {{ ?taxon wdt:P225 ?sci }}
-}} ORDER BY DESC(?links) ?taxon ?name LIMIT {limit} OFFSET {offset}"""
+  ?taxon wikibase:sitelinks ?links . FILTER(?links >= {minimum})
+}} ORDER BY DESC(?links) ?taxon LIMIT {limit} OFFSET {offset}"""
     return PREFIX + body
 
 
 def animal_filter_query(qids):
     values = " ".join(f"wd:{qid}" for qid in qids)
-    return PREFIX + f"""SELECT ?taxon ?ext WHERE {{
+    return PREFIX + f"""SELECT ?taxon ?name ?sci ?ext WHERE {{
   VALUES ?taxon {{ {values} }}
   ?taxon wdt:P171* wd:Q729 .
+  OPTIONAL {{ ?taxon wdt:P1843 ?name . FILTER(LANG(?name) = "en") }}
+  OPTIONAL {{ ?taxon wdt:P225 ?sci }}
   BIND(EXISTS {{ ?taxon wdt:P141 wd:Q237350 }} ||
        EXISTS {{ ?taxon wdt:P31 wd:Q23038290 }} AS ?ext)
 }}"""
@@ -195,11 +194,11 @@ def _insert(conn, row, title, extinct, source, pageview_fetch=get_json, common_n
     return sid
 
 
-def _page_rows(kind, offset, fetch):
+def _page_rows(kind, minimum, offset, fetch):
     page = _request(
         fetch,
         ENDPOINT,
-        {"query": ranked_query(kind, PAGE_SIZE, offset), "format": "json"},
+        {"query": ranked_query(kind, minimum, PAGE_SIZE, offset), "format": "json"},
         60,
         1,
         {"Accept": "application/sparql-results+json"},
@@ -216,8 +215,6 @@ def _page_rows(kind, offset, fetch):
         rows.append(
             {
                 "qid": qid,
-                "name": _value(binding, "name"),
-                "sci": _value(binding, "sci"),
                 "links": _value(binding, "links"),
                 "_index": index,
             }
@@ -238,13 +235,20 @@ def _animal_rows(rows, kind, fetch):
     )
     if data is None:
         raise RuntimeError("QLever animal filter failed")
-    ext = {_value(row, "taxon").rsplit("/", 1)[-1]: _value(row, "ext") == "true" for row in _bindings(data)}
+    result_by_qid = {}
+    for binding in _bindings(data):
+        qid = (_value(binding, "taxon") or "").rsplit("/", 1)[-1]
+        if qid and qid not in result_by_qid:
+            result_by_qid[qid] = binding
     result = []
     for row in rows:
-        if row["qid"] == "Q15978631" or row["qid"] not in ext:
+        binding = result_by_qid.get(row["qid"])
+        if row["qid"] == "Q15978631" or binding is None:
             continue
         row = dict(row)
-        row["extinct"] = ext[row["qid"]]
+        row["name"] = _value(binding, "name")
+        row["sci"] = _value(binding, "sci")
+        row["extinct"] = _value(binding, "ext") == "true"
         if kind == "living" and row["extinct"]:
             continue
         result.append(row)
@@ -262,6 +266,11 @@ def discover(conn, max_new, wishlist_path=None, fetch=get_json, clock=time.monot
     for kind in ("living", "extinct"):
         if quotas[kind] <= 0:
             continue
+        ladder = LADDERS[kind]
+        row = conn.execute("SELECT value FROM meta WHERE key=?", (f"{kind}_min_sitelinks",)).fetchone()
+        minimum = int(row["value"]) if row else ladder[0]
+        if minimum not in ladder:
+            minimum = ladder[-1]
         row = conn.execute("SELECT value FROM meta WHERE key=?", (f"{kind}_offset",)).fetchone()
         offset = int(row["value"]) if row else 0
         offsets[kind] = offset
@@ -270,7 +279,7 @@ def discover(conn, max_new, wishlist_path=None, fetch=get_json, clock=time.monot
                 break
             page_start = offset
             try:
-                rows = _page_rows(kind, page_start, fetch)
+                rows = _page_rows(kind, minimum, page_start, fetch)
                 animals = _animal_rows(rows, kind, fetch)
                 titles = fetch_titles([row["qid"] for row in animals], fetch)
                 processed = 0
@@ -296,13 +305,18 @@ def discover(conn, max_new, wishlist_path=None, fetch=get_json, clock=time.monot
                             break
                     if stopped:
                         offset += processed
-                    elif len(rows) < PAGE_SIZE:
-                        offset += len(rows)
                     else:
                         offset += PAGE_SIZE
+                        if len(rows) < PAGE_SIZE:
+                            position = ladder.index(minimum)
+                            minimum = ladder[min(position + 1, len(ladder) - 1)]
                     conn.execute(
                         "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
                         (f"{kind}_offset", str(offset)),
+                    )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",
+                        (f"{kind}_min_sitelinks", str(minimum)),
                     )
                 offsets[kind] = offset
             except Exception as exc:
