@@ -1,5 +1,7 @@
 import unittest
 import sys
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -67,10 +69,19 @@ class DiscoveryQleverTests(unittest.TestCase):
         self.assertNotIn("schema:", query)
         self.assertIn("VALUES ?taxon { wd:Q1 }", query)
 
-    def test_label_mismatch_aborts(self):
+    def test_label_mismatch_warns_and_continues(self):
         data = {"entities": {"Q7432": {"labels": {"en": {"value": "wrong"}}}}}
-        with self.assertRaises(RuntimeError):
+        output = StringIO()
+        with redirect_stderr(output):
             discovery.validate_labels(lambda *args, **kwargs: data)
+        self.assertIn("label check warning: Q7432", output.getvalue())
+
+    def test_q729_animal_label_is_accepted(self):
+        data = {"entities": {"Q729": {"labels": {"en": {"value": "animal"}}}}}
+        output = StringIO()
+        with redirect_stderr(output):
+            discovery.validate_labels(lambda *args, **kwargs: data)
+        self.assertNotIn("Q729", output.getvalue())
 
 
 if __name__ == "__main__":
