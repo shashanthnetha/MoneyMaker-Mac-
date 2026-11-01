@@ -9,8 +9,11 @@ def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,
     attempts = max(attempts, 5)
     delays = (0,) + tuple(backoff[: max(0, attempts - 1)])
     host = urllib.parse.urlparse(url).netloc
+    skip_next_delay = False
     for i, delay in enumerate(delays):
-        if delay: time.sleep(delay)
+        if delay and not skip_next_delay:
+            time.sleep(delay)
+        skip_next_delay = False
         started = time.monotonic()
         raw_body = ""
         try:
@@ -40,6 +43,11 @@ def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,
                 + (f" body={raw_body[:300]}" if raw_body else ""),
                 file=sys.stderr,
             )
+            if status in (401, 403):
+                return {
+                    "_http_error": status,
+                    "_raw_body": raw_body,
+                }
             if status == 429 and i < len(delays) - 1:
                 wait = None
                 match = re.search(r"try again in\s+(\d+(?:\.\d+)?)\s*(ms|s)", raw_body, re.I)
@@ -48,6 +56,7 @@ def _request(url, method="GET", body=None, headers=None, timeout=30, backoff=(2,
                 if wait is None:
                     wait = (5, 15, 30, 45)[min(i, 3)]
                 time.sleep(wait + 1)
+                skip_next_delay = True
                 continue
             if i == len(delays) - 1:
                 return None

@@ -139,6 +139,7 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
         (batch,),
     ).fetchall()
     last_groq_start = None
+    last_groq_status = None
     for row in rows:
         try:
             data = get_json(
@@ -161,12 +162,20 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
             if len(text) < 400:
                 _failure(conn, row, "empty_content", {"raw_content": text, "finish_reason": None})
                 continue
-            if last_groq_start is not None:
+            if last_groq_start is not None and last_groq_status in (200, 429):
                 remaining = 8 - (clock() - last_groq_start)
                 if remaining > 0:
                     sleeper(remaining)
             last_groq_start = clock()
             metadata = call(_prompt(row, text), return_metadata=True)
+            last_groq_status = metadata.get("status")
+            if metadata.get("error") == "auth_error":
+                print(
+                    f"::error::GROQ_API_KEY was rejected by Groq (HTTP {metadata['status']}). "
+                    "Update the GitHub secret.",
+                    file=sys.stderr,
+                )
+                return
             reason = metadata.get("error")
             if reason:
                 _failure(conn, row, reason, metadata)
@@ -225,7 +234,6 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
                         "INSERT OR IGNORE INTO species_groups(species_id,group_id) VALUES(?,?)",
                         (row["id"], gid),
                     )
-            sleeper(1.5)
         except StopIteration as exc:
             print(str(exc), file=sys.stderr)
             return
