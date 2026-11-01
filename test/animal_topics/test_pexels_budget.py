@@ -183,7 +183,7 @@ class PexelsBudgetTests(unittest.TestCase):
         self.assertEqual(len(calls), 100)
         self.assertIn("(50 checked, 1 pending)", stderr)
 
-    def test_reset_v3_runs_once_and_selection_excludes_null(self):
+    def test_reset_v3_runs_once_and_selection_allows_null_footage(self):
         self.add_species(
             "ResetMe",
             status="disabled",
@@ -215,6 +215,38 @@ class PexelsBudgetTests(unittest.TestCase):
             ).fetchone()[0],
             "manual",
         )
+
+    def test_selection_allows_unchecked_footage(self):
+        self.add_species("Unchecked", footage_score=None)
+        self.conn.execute(
+            "UPDATE species SET wiki_text='text' WHERE common_name='Unchecked'"
+        )
+        self.conn.commit()
+        self.assertEqual(select_species(self.conn)["common_name"], "Unchecked")
+
+    def test_selection_excludes_score_below_threshold(self):
+        self.add_species("LowScore", footage_score=14)
+        self.conn.execute(
+            "UPDATE species SET wiki_text='text' WHERE common_name='LowScore'"
+        )
+        self.conn.commit()
+        self.assertIsNone(select_species(self.conn))
+
+    def test_selection_allows_score_at_threshold(self):
+        self.add_species("GoodScore", footage_score=15)
+        self.conn.execute(
+            "UPDATE species SET wiki_text='text' WHERE common_name='GoodScore'"
+        )
+        self.conn.commit()
+        self.assertEqual(select_species(self.conn)["common_name"], "GoodScore")
+
+    def test_selection_excludes_disabled_unchecked_species(self):
+        self.add_species("DisabledUnchecked", status="disabled", footage_score=None)
+        self.conn.execute(
+            "UPDATE species SET wiki_text='text' WHERE common_name='DisabledUnchecked'"
+        )
+        self.conn.commit()
+        self.assertIsNone(select_species(self.conn))
 
 
 if __name__ == "__main__":
