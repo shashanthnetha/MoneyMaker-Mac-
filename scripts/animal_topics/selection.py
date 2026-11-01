@@ -2,7 +2,7 @@ import datetime, random, sys
 from .stats import performance_multipliers
 
 def select_species(conn,forced=None,rng=random,exclude=()):
-    rows=list(conn.execute("SELECT DISTINCT s.* FROM species s WHERE s.status='active' AND s.enrichment_status='done' AND s.wiki_text IS NOT NULL AND s.footage_score>=15"))
+    rows=list(conn.execute("SELECT DISTINCT s.* FROM species s WHERE s.status='active' AND s.enrichment_status='done' AND s.wiki_text IS NOT NULL AND s.footage_score IS NOT NULL AND s.footage_score>=15"))
     excluded=set(exclude); rows=[r for r in rows if r['id'] not in excluded]
     if forced:
         group=conn.execute('SELECT id FROM groups WHERE lower(name)=lower(?)',(forced,)).fetchone(); filtered=[r for r in rows if group and conn.execute('SELECT 1 FROM species_groups WHERE species_id=? AND group_id=?',(r['id'],group['id'])).fetchone()]

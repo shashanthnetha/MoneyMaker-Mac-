@@ -2,6 +2,9 @@ import json
 import os
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from .db import CLASSES, HABITATS
 from .discovery import is_human_lineage
@@ -104,6 +107,83 @@ Living species visual_keywords must include the common name plus up to two close
 Return ONLY the JSON object"""
 
 
+def _pexels_search(api_key, query, max_attempts=4):
+    """Run a Pexels search, retrying non-throttle failures."""
+    url = "https://api.pexels.com/videos/search?" + urllib.parse.urlencode(
+        {"query": query, "per_page": 1}
+    )
+    delays = (0, 2, 5, 10)[:max_attempts]
+    for attempt, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        request = urllib.request.Request(
+            url,
+            headers={"Authorization": api_key},
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = response.read().decode("utf-8")
+                payload = json.loads(body)
+                remaining = response.headers.get("X-Ratelimit-Remaining")
+                return {
+                    "ok": True,
+                    "throttled": False,
+                    "payload": payload,
+                    "remaining": int(remaining) if remaining is not None else None,
+                    "attempts": attempt + 1,
+                }
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8")
+            except Exception:
+                pass
+            if exc.code == 429:
+                return {
+                    "ok": False,
+                    "throttled": True,
+                    "payload": None,
+                    "remaining": None,
+                    "attempts": attempt + 1,
+                }
+            if exc.code < 500 or attempt == len(delays) - 1:
+                return {
+                    "ok": False,
+                    "throttled": False,
+                    "payload": None,
+                    "remaining": None,
+                    "attempts": attempt + 1,
+                }
+        except (OSError, ValueError):
+            if attempt == len(delays) - 1:
+                return {
+                    "ok": False,
+                    "throttled": False,
+                    "payload": None,
+                    "remaining": None,
+                    "attempts": attempt + 1,
+                }
+    return {
+        "ok": False,
+        "throttled": False,
+        "payload": None,
+        "remaining": None,
+        "attempts": len(delays),
+    }
+
+
+def _stop_pexels(checked, pending):
+    print(
+        f"pexels throttled: stopping footage checks ({checked} checked, {pending} pending)",
+        file=sys.stderr,
+    )
+    print(
+        "::warning::Pexels rate limit reached; remaining species will be checked in the next run.",
+        file=sys.stderr,
+    )
+
+
 def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
     conn.execute(
         """UPDATE species SET status='disabled', disabled_reason='human_lineage'
@@ -125,117 +205,174 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
             """UPDATE species SET enrichment_attempts=0, enrichment_status='pending'
             WHERE enrichment_status='failed' AND status='active'"""
         )
+        conn.execute("INSERT INTO meta(key,value) VALUES('enrich_reset_v2','1')")
+    if not conn.execute("SELECT 1 FROM meta WHERE key='enrich_reset_v3'").fetchone():
         conn.execute(
-            "INSERT INTO meta(key,value) VALUES('enrich_reset_v2','1')"
+            """UPDATE species SET status='active', disabled_reason=NULL, footage_score=NULL
+            WHERE disabled_reason='low_footage'
+              AND (footage_score IS NULL OR footage_score=0)"""
         )
+        conn.execute("INSERT INTO meta(key,value) VALUES('enrich_reset_v3','1')")
     conn.commit()
-    if not os.getenv("GROQ_API_KEY") or not os.getenv("PEXELS_API_KEY"):
-        print("enrichment skipped: missing API key", file=sys.stderr)
-        return
-    rows = conn.execute(
-        """SELECT * FROM species
-        WHERE enrichment_status IN ('pending','failed') AND enrichment_attempts<3
-        ORDER BY CASE WHEN boost>1 THEN 0 ELSE 1 END, discovered_at LIMIT ?""",
-        (batch,),
-    ).fetchall()
-    last_groq_start = None
-    last_groq_status = None
-    for row in rows:
-        try:
-            data = get_json(
-                "https://en.wikipedia.org/w/api.php",
-                params={
-                    "action": "query",
-                    "prop": "extracts",
-                    "explaintext": "1",
-                    "exchars": "2500",
-                    "redirects": "1",
-                    "format": "json",
-                    "titles": row["wikipedia_title"],
-                },
-            )
-            if data is None:
-                _failure(conn, row, "http_error", {})
-                continue
-            pages = data.get("query", {}).get("pages", {})
-            text = next(iter(pages.values()), {}).get("extract", "")
-            if len(text) < 400:
-                _failure(conn, row, "empty_content", {"raw_content": text, "finish_reason": None})
-                continue
-            if last_groq_start is not None and last_groq_status in (200, 429):
-                remaining = 8 - (clock() - last_groq_start)
-                if remaining > 0:
-                    sleeper(remaining)
-            last_groq_start = clock()
-            metadata = call(_prompt(row, text), return_metadata=True)
-            last_groq_status = metadata.get("status")
-            if metadata.get("error") == "auth_error":
-                print(
-                    f"::error::GROQ_API_KEY was rejected by Groq (HTTP {metadata['status']}). "
-                    "Update the GitHub secret.",
-                    file=sys.stderr,
+
+    if os.getenv("GROQ_API_KEY"):
+        rows = conn.execute(
+            """SELECT * FROM species
+            WHERE enrichment_status IN ('pending','failed') AND enrichment_attempts<3
+            ORDER BY CASE WHEN boost>1 THEN 0 ELSE 1 END, discovered_at LIMIT ?""",
+            (batch,),
+        ).fetchall()
+        last_groq_start = None
+        last_groq_status = None
+        for row in rows:
+            try:
+                data = get_json(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "prop": "extracts",
+                        "explaintext": "1",
+                        "exchars": "2500",
+                        "redirects": "1",
+                        "format": "json",
+                        "titles": row["wikipedia_title"],
+                    },
                 )
-                return
-            reason = metadata.get("error")
-            if reason:
-                _failure(conn, row, reason, metadata)
-                continue
-            result = metadata.get("result") or {}
-            if "classes" not in result or "habitats" not in result or "visual_keywords" not in result:
-                _failure(conn, row, "missing_keys", metadata)
-                continue
-            classes = normalize_values(result["classes"], CLASS_MAP)
-            habitats = normalize_values(result["habitats"], HABITAT_MAP)
-            keywords = normalize_keywords(result["visual_keywords"])
-            if not classes:
-                _failure(conn, row, "no_valid_class", metadata)
-                continue
-            if not habitats:
-                _failure(conn, row, "no_valid_habitat", metadata)
-                continue
-            if not keywords:
-                _failure(conn, row, "no_keywords", metadata)
-                continue
-            score = 0
-            for keyword in keywords:
-                response = get_json(
-                    "https://api.pexels.com/videos/search",
-                    headers={"Authorization": os.environ["PEXELS_API_KEY"]},
-                    params={"query": keyword, "per_page": 1},
-                ) or {}
-                remaining = response.get("_headers", {}).get(
-                    "X-Ratelimit-Remaining", response.get("X-Ratelimit-Remaining")
-                )
-                if remaining is not None and int(remaining) < 25:
-                    raise StopIteration("Pexels rate limit remaining below 25")
-                score = max(score, int(response.get("total_results", 0)))
-            if not row["is_extinct"]:
-                response = get_json(
-                    "https://api.pexels.com/videos/search",
-                    headers={"Authorization": os.environ["PEXELS_API_KEY"]},
-                    params={"query": row["common_name"], "per_page": 1},
-                ) or {}
-                score = max(score, int(response.get("total_results", 0)))
-            with conn:
-                conn.execute(
-                    """UPDATE species SET wiki_text=?, visual_keywords=?,
-                    footage_score=?, enrichment_status='done',
-                    enrichment_attempts=enrichment_attempts+1,
-                    status=CASE WHEN ?<15 THEN 'disabled' ELSE status END,
-                    disabled_reason=CASE WHEN ?<15 THEN 'low_footage' ELSE disabled_reason END
-                    WHERE id=?""",
-                    (text, json.dumps(keywords), score, score, score, row["id"]),
-                )
-                for name in classes + habitats + (["Extinct"] if row["is_extinct"] else ["Living"]):
-                    gid = conn.execute(
-                        "SELECT id FROM groups WHERE name=?", (name,)
-                    ).fetchone()["id"]
-                    conn.execute(
-                        "INSERT OR IGNORE INTO species_groups(species_id,group_id) VALUES(?,?)",
-                        (row["id"], gid),
+                if data is None:
+                    _failure(conn, row, "http_error", {})
+                    continue
+                pages = data.get("query", {}).get("pages", {})
+                text = next(iter(pages.values()), {}).get("extract", "")
+                if len(text) < 400:
+                    _failure(
+                        conn,
+                        row,
+                        "empty_content",
+                        {"raw_content": text, "finish_reason": None},
                     )
-        except StopIteration as exc:
-            print(str(exc), file=sys.stderr)
+                    continue
+                if last_groq_start is not None and last_groq_status in (200, 429):
+                    remaining = 8 - (clock() - last_groq_start)
+                    if remaining > 0:
+                        sleeper(remaining)
+                last_groq_start = clock()
+                metadata = call(_prompt(row, text), return_metadata=True)
+                last_groq_status = metadata.get("status")
+                if metadata.get("error") == "auth_error":
+                    print(
+                        f"::error::GROQ_API_KEY was rejected by Groq (HTTP {metadata['status']}). "
+                        "Update the GitHub secret.",
+                        file=sys.stderr,
+                    )
+                    return
+                reason = metadata.get("error")
+                if reason:
+                    _failure(conn, row, reason, metadata)
+                    continue
+                result = metadata.get("result") or {}
+                if not all(key in result for key in ("classes", "habitats", "visual_keywords")):
+                    _failure(conn, row, "missing_keys", metadata)
+                    continue
+                classes = normalize_values(result["classes"], CLASS_MAP)
+                habitats = normalize_values(result["habitats"], HABITAT_MAP)
+                keywords = normalize_keywords(result["visual_keywords"])
+                if not classes:
+                    _failure(conn, row, "no_valid_class", metadata)
+                    continue
+                if not habitats:
+                    _failure(conn, row, "no_valid_habitat", metadata)
+                    continue
+                if not keywords:
+                    _failure(conn, row, "no_keywords", metadata)
+                    continue
+                with conn:
+                    conn.execute(
+                        """UPDATE species SET wiki_text=?, visual_keywords=?,
+                        enrichment_status='done',
+                        enrichment_attempts=enrichment_attempts+1
+                        WHERE id=?""",
+                        (text, json.dumps(keywords), row["id"]),
+                    )
+                    for name in classes + habitats + (
+                        ["Extinct"] if row["is_extinct"] else ["Living"]
+                    ):
+                        gid = conn.execute(
+                            "SELECT id FROM groups WHERE name=?", (name,)
+                        ).fetchone()["id"]
+                        conn.execute(
+                            "INSERT OR IGNORE INTO species_groups(species_id,group_id) VALUES(?,?)",
+                            (row["id"], gid),
+                        )
+            except Exception:
+                _failure(conn, row, "http_error", {})
+    else:
+        print("enrichment skipped: missing GROQ_API_KEY", file=sys.stderr)
+
+    api_key = os.getenv("PEXELS_API_KEY")
+    if not api_key:
+        print("pexels skipped: missing PEXELS_API_KEY", file=sys.stderr)
+        return
+
+    candidates = conn.execute(
+        """SELECT * FROM species
+        WHERE enrichment_status='done' AND status='active'
+          AND footage_score IS NULL AND visual_keywords IS NOT NULL
+        ORDER BY CASE WHEN source='wishlist' THEN 0 ELSE 1 END,
+                 popularity IS NULL, popularity DESC, id"""
+    ).fetchall()
+    checked = 0
+    requests = 0
+    for row in candidates:
+        if requests >= 100:
+            _stop_pexels(checked, len(candidates) - checked)
             return
-        except Exception:
-            _failure(conn, row, "http_error", {})
+        try:
+            keywords = json.loads(row["visual_keywords"])
+        except (TypeError, json.JSONDecodeError):
+            checked += 1
+            continue
+        if not isinstance(keywords, list):
+            checked += 1
+            continue
+        queries = keywords if row["is_extinct"] else [row["common_name"]] + keywords
+        queries = queries[:2]
+        scores = []
+        low_remaining = False
+        failed = False
+        for query in queries:
+            if requests >= 100:
+                _stop_pexels(checked, len(candidates) - checked)
+                return
+            if requests:
+                sleeper(1)
+            response = _pexels_search(
+                api_key, query, max_attempts=max(1, 100 - requests)
+            )
+            requests += response["attempts"]
+            if response["throttled"]:
+                _stop_pexels(checked, len(candidates) - checked)
+                return
+            if not response["ok"]:
+                failed = True
+                break
+            scores.append(int(response["payload"].get("total_results", 0)))
+            if response["remaining"] is not None and response["remaining"] < 25:
+                low_remaining = True
+            if scores[-1] >= 15:
+                break
+        if failed or not scores:
+            checked += 1
+            continue
+        score = max(scores)
+        with conn:
+            conn.execute(
+                """UPDATE species SET footage_score=?,
+                status=CASE WHEN ? < 15 THEN 'disabled' ELSE status END,
+                disabled_reason=CASE WHEN ? < 15 THEN 'low_footage' ELSE disabled_reason END
+                WHERE id=?""",
+                (score, score, score, row["id"]),
+            )
+        checked += 1
+        if low_remaining:
+            _stop_pexels(checked, len(candidates) - checked)
+            return
