@@ -1,6 +1,7 @@
 import argparse, os, sqlite3, sys
 from .db import connect, export, init_schema, restore
 from .discovery import discover
+from .discovery import repair_common_names
 from .enrich import enrich
 from .migrate import migrate
 from .pipeline import pick_for_connection
@@ -34,7 +35,8 @@ def main(argv=None):
             conn.execute("UPDATE topics SET status='failed',updated_at=datetime('now') WHERE id=? AND status='reserved'",(args.topic_id,)); conn.commit()
         elif args.command=='dry-run':
             memory=sqlite3.connect(':memory:'); conn.backup(memory); memory.row_factory=sqlite3.Row
-            print('| # | Species | Extinct | Groups | Fact | Title | Source |', flush=True); print('|---|---|---|---|---|---|', flush=True)
+            repair_common_names(memory)
+            print('| # | Species | Extinct | Groups | Fact | Title | Source |', flush=True); print('|---|---|---|---|---|---|---|', flush=True)
             dryenv=dict(os.environ); dryenv.pop('ANIMAL_TOPIC_ID_FILE',None)
             for i in range(args.count):
                 try:

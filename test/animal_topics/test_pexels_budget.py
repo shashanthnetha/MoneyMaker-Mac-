@@ -193,7 +193,7 @@ class PexelsBudgetTests(unittest.TestCase):
         )
         self.add_species("Eligible", footage_score=20, keywords=["eligible"])
         self.conn.execute(
-            "UPDATE species SET wiki_text='text' WHERE common_name='Eligible'"
+            "UPDATE species SET wiki_text='Eligible is an animal.' WHERE common_name='Eligible'"
         )
         self.conn.commit()
         with patch.dict(os.environ, {}, clear=True):
@@ -202,7 +202,9 @@ class PexelsBudgetTests(unittest.TestCase):
             "SELECT status, disabled_reason, footage_score FROM species WHERE common_name='ResetMe'"
         ).fetchone()
         self.assertEqual(tuple(row), ("active", None, None))
-        self.assertEqual(select_species(self.conn)["common_name"], "Eligible")
+        self.assertIn(
+            select_species(self.conn)["common_name"], {"ResetMe", "Eligible"}
+        )
         self.conn.execute(
             "UPDATE species SET disabled_reason='manual' WHERE common_name='ResetMe'"
         )

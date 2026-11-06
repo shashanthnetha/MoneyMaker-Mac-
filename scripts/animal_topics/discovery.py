@@ -70,6 +70,48 @@ def is_human_lineage(scientific_name, common_name, wikipedia_title):
     return any(term in text for term in HUMAN_LINEAGE_TERMS)
 
 
+def choose_common_name(p1843, wikipedia_title, scientific_name, lead):
+    title_clean = re.sub(r"\s+\([^)]*\)$", "", wikipedia_title or "").strip()
+    if scientific_name and title_clean.casefold() != scientific_name.casefold():
+        name = title_clean
+    else:
+        name = p1843 or title_clean
+    if lead and name.casefold() not in lead.casefold():
+        phrase = re.split(r"\s+\(", lead.split(".", 1)[0], maxsplit=1)[0].strip()
+        phrase = re.sub(r"^(?:The|A|An)\s+", "", phrase, flags=re.I).strip()
+        if (
+            1 <= len(phrase.split()) <= 5
+            and len(phrase) <= 40
+            and not re.search(r"\d", phrase)
+            and (not scientific_name or phrase.casefold() != scientific_name.casefold())
+        ):
+            name = phrase
+    return name
+
+
+def repair_common_names(conn):
+    if conn.execute("SELECT 1 FROM meta WHERE key='name_fix_v1'").fetchone():
+        return
+    renamed = 0
+    rows = conn.execute(
+        """SELECT id, common_name, wikipedia_title, scientific_name, wiki_text
+        FROM species WHERE source != 'wishlist' AND wiki_text IS NOT NULL"""
+    ).fetchall()
+    for row in rows:
+        name = choose_common_name(
+            row["common_name"],
+            row["wikipedia_title"],
+            row["scientific_name"],
+            row["wiki_text"][:900],
+        )
+        if name != row["common_name"]:
+            conn.execute("UPDATE species SET common_name=? WHERE id=?", (name, row["id"]))
+            renamed += 1
+    conn.execute("INSERT INTO meta(key,value) VALUES('name_fix_v1','1')")
+    conn.commit()
+    print(f"name fix: {renamed} species renamed", file=sys.stderr)
+
+
 def ranked_query(kind, minimum=3, limit=PAGE_SIZE, offset=0):
     if kind == "living":
         body = f"""SELECT ?taxon ?links WHERE {{
@@ -183,7 +225,9 @@ def _insert(conn, row, title, extinct, source, pageview_fetch=get_json, common_n
     qid = row["qid"]
     if conn.execute("SELECT 1 FROM species WHERE wikidata_qid=?", (qid,)).fetchone():
         return None
-    common = common_name or row.get("name") or re.sub(r"\s+\([^)]*\)$", "", title)
+    common = common_name or choose_common_name(
+        row.get("name"), title, row.get("sci"), None
+    )
     sci = row.get("sci")
     if is_human_lineage(sci, common, title):
         return None

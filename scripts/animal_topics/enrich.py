@@ -8,7 +8,7 @@ import urllib.request
 import re
 
 from .db import CLASSES, HABITATS
-from .discovery import is_human_lineage
+from .discovery import choose_common_name, is_human_lineage, repair_common_names
 from .http import get_json
 from .groq import call
 
@@ -244,6 +244,7 @@ def _stop_pexels(checked, pending):
 
 
 def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
+    repair_common_names(conn)
     conn.execute(
         """UPDATE species SET status='disabled', disabled_reason='human_lineage'
         WHERE status='active' AND (
@@ -361,12 +362,20 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
                     _failure(conn, row, "no_keywords", metadata)
                     continue
                 with conn:
+                    common_name = row["common_name"]
+                    if row["source"] != "wishlist":
+                        common_name = choose_common_name(
+                            row["common_name"],
+                            row["wikipedia_title"],
+                            row["scientific_name"],
+                            text[:900],
+                        )
                     conn.execute(
-                        """UPDATE species SET wiki_text=?, visual_keywords=?,
+                        """UPDATE species SET wiki_text=?, common_name=?, visual_keywords=?,
                         enrichment_status='done',
                         enrichment_attempts=enrichment_attempts+1
                         WHERE id=?""",
-                        (text, json.dumps(keywords), row["id"]),
+                        (text, common_name, json.dumps(keywords), row["id"]),
                     )
                     for name in classes + habitats + (
                         ["Extinct"] if row["is_extinct"] else ["Living"]

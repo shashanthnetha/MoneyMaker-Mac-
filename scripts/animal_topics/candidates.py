@@ -13,9 +13,7 @@ def clean_title(value):
     return re.sub(r'\s+',' ',value).strip('"#*- \t\r\n')
 
 def _name_pattern(name):
-    words=name.split(); patterns=[re.escape(name)]
-    if len(words)>1: patterns.append(re.escape(words[-1]))
-    return r'(?:'+'|'.join(patterns)+r")(?:s|es|'s)?"
+    return re.escape(name) + r"(?:s|es|'s)?"
 
 def valid_title(title,name,extinct=False):
     if not 15<=len(title)<=95:return False

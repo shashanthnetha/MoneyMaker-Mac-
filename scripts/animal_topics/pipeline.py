@@ -4,6 +4,7 @@ from .selection import select_species
 from .groq import call
 from .candidates import clean_title,valid_title,parse_candidates,is_taxonomy_fact,choose_by_interest
 from .dedupe import survivors
+from .discovery import repair_common_names
 
 _QUOTA_LOGGED = False
 
@@ -90,5 +91,7 @@ def pick_for_workflow(env):
     db=env.get('ANIMAL_DB_PATH','scripts/animal_topics.db'); sql=env.get('ANIMAL_SQL_PATH','scripts/animal_topics.sql')
     if not os.path.exists(db): restore(db,sql)
     conn=connect(db)
-    try:return _pick_on_conn(conn,env)
+    try:
+        repair_common_names(conn)
+        return _pick_on_conn(conn,env)
     finally:conn.close()
