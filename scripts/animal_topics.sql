@@ -1,5 +1,6 @@
 BEGIN TRANSACTION;
 CREATE TABLE facts(id INTEGER PRIMARY KEY AUTOINCREMENT,species_id INTEGER NOT NULL REFERENCES species(id),fact_text TEXT NOT NULL,fact_key TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(species_id,fact_key));
+INSERT INTO "facts" VALUES(1,248,'Andean condors spend about 99% of their flight time soaring on thermals and flap their wings only about 1% of the time.','minimal wing flapping','2026-11-06T21:44:40.142694+00:00');
 CREATE TABLE groups(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT UNIQUE NOT NULL,kind TEXT NOT NULL);
 INSERT INTO "groups" VALUES(1,'Mammal','class');
 INSERT INTO "groups" VALUES(2,'Bird','class');
@@ -4494,7 +4495,7 @@ The condor soars with its wings held horizontally and its primary feathers bent 
 === Breeding ===
 Sexual maturity and breeding behavior do not appear in the Andean condor until the bird is five or six years of age. It may live to 50 years or more, and it mates for life. During courtship displays, the skin of the male''s neck flushes, changing from dull red to bright yellow, and inflates. He approaches the female with neck outstretched, revealing the inflated neck and the chest patch, while hissing, then extends his wings and stands erect while clicking his tongue. Other courtship rituals include hissing and clucking while hopping with wings partially spread, and dancing.
 
-The Andean condor prefers to roost and breed at elevations of 3,000 to 5,000 m (9,800 to 16,400 ft). Its nest, which consists of a few sticks placed around the eggs, is created on inaccessible ledges of rock. However, in coastal areas of Peru, where there are few cliffs, some nests are simply partially shaded crannie','["Andean condor", "vulture", "bird of prey"]',NULL,'done',1,'active',NULL,0,NULL,'2026-11-06T21:21:52.185965+00:00','wikidata_living');
+The Andean condor prefers to roost and breed at elevations of 3,000 to 5,000 m (9,800 to 16,400 ft). Its nest, which consists of a few sticks placed around the eggs, is created on inaccessible ledges of rock. However, in coastal areas of Peru, where there are few cliffs, some nests are simply partially shaded crannie','["Andean condor", "vulture", "bird of prey"]',NULL,'done',1,'active',NULL,1,'2026-11-06T21:44:40.142694+00:00','2026-11-06T21:21:52.185965+00:00','wikidata_living');
 INSERT INTO "species" VALUES(249,'Q175329','Felis margarita','Sand cat','Sand cat',0,84,67589,4.82988244644349329e+00,1.0,'The sand cat (Felis margarita) is a small wild cat that inhabits sandy and stony deserts far from water sources. With its sandy to light grey fur, it is well camouflaged in a desert environment. Its head-and-body length ranges from 39–52 cm (15–20 in) with a 23–31 cm (9.1–12.2 in) long tail. Its 5–7 cm (2.0–2.8 in) short ears are set low on the sides of the head, aiding detection of prey moving underground. The long hair covering the soles of its paws insulates its pads against the extreme temperatures found in deserts.
 The first sand cat known to scientists was discovered in the Algerian Sahara and described in 1858. To date, it has been recorded in several disjunct locations in Western Sahara, Morocco, Algeria, Libya, Niger, Chad, Egypt, the Arabian Peninsula and the Middle East. In Central Asia, it was first recorded in the Karakum Desert in 1925. The large gap between these two regio
 
@@ -6589,9 +6590,11 @@ INSERT INTO "topics" VALUES(128,NULL,NULL,'Tardigrade’s Freeze‑Proof Armor: 
 INSERT INTO "topics" VALUES(129,NULL,NULL,'Axolotl Regenerates Entire Heart and Brain Parts','axolotl regenerates entire heart and brain parts','published',0,1,NULL,'2026-10-30T06:22:08.590077+00:00','2026-10-30T06:22:08.590077+00:00');
 INSERT INTO "topics" VALUES(130,NULL,NULL,'How border collies learn over 1000 words','how border collies learn over 1000 words','published',0,1,NULL,'2026-10-30T16:48:57.915911+00:00','2026-10-30T16:48:57.915911+00:00');
 INSERT INTO "topics" VALUES(131,NULL,NULL,'Aye‑aye''s Midnight Finger Drumming Lures Insects in Madagascar','aye aye s midnight finger drumming lures insects in madagascar','published',0,1,NULL,'2026-10-31T06:12:45.965570+00:00','2026-10-31T06:12:45.965570+00:00');
+INSERT INTO "topics" VALUES(132,248,1,'Why the Andean Condor Flaps Its Wings So Rarely','why the andean condor flaps its wings so rarely','reserved',0,0,'42299141948','2026-11-06T21:44:40.142694+00:00','2026-11-06T21:44:40.142694+00:00');
 CREATE TABLE videos(id INTEGER PRIMARY KEY AUTOINCREMENT,topic_id INTEGER NOT NULL REFERENCES topics(id),task_id TEXT,video_file TEXT,youtube_video_id TEXT,views INTEGER,likes INTEGER,stats_fetched_at TEXT,status TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
 DELETE FROM "sqlite_sequence";
 INSERT INTO "sqlite_sequence" VALUES('groups',36);
-INSERT INTO "sqlite_sequence" VALUES('topics',131);
+INSERT INTO "sqlite_sequence" VALUES('topics',132);
 INSERT INTO "sqlite_sequence" VALUES('species',300);
+INSERT INTO "sqlite_sequence" VALUES('facts',1);
 COMMIT;
