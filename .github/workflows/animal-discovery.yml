@@ -44,7 +44,8 @@ jobs:
           YOUTUBE_CHANNEL_ID: ${{ secrets.YOUTUBE_CHANNEL_ID }}
         run: PYTHONPATH=scripts uv run python -m animal_topics.cli stats
       - run: PYTHONPATH=scripts uv run python -m animal_topics.cli export
-      - run: |
+      - if: always()
+        run: |
           git add scripts/animal_topics.sql
           if ! git diff --cached --quiet; then
             git config user.name "github-actions[bot]"

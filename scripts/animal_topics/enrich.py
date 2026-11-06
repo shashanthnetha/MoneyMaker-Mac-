@@ -325,7 +325,7 @@ def enrich(conn, batch, clock=time.monotonic, sleeper=time.sleep):
                 metadata = call(
                     _prompt(row, text),
                     return_metadata=True,
-                    model=os.environ.get("GROQ_ENRICH_MODEL", "llama-3.1-8b-instant"),
+                    model=os.environ.get("GROQ_ENRICH_MODEL", "openai/gpt-oss-20b"),
                 )
                 last_groq_status = metadata.get("status")
                 if metadata.get("error") == "auth_error":

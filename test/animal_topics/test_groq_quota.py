@@ -76,7 +76,7 @@ class GroqQuotaTests(unittest.TestCase):
         self.assertEqual(candidate_body["reasoning_effort"], "low")
 
     def test_enrichment_model_404_falls_back(self):
-        error = {"_http_error": 404, "_raw_body": '{"error":"model not found"}'}
+        error = {"_http_error": 404, "_raw_body": '{"code":"model_not_found"}'}
         good = {"choices": [{"message": {"content": "{}"}}]}
         with patch.object(groq, "post_json", side_effect=[error, good]) as post, patch.dict(
             os.environ,
@@ -85,7 +85,9 @@ class GroqQuotaTests(unittest.TestCase):
         ):
             result = groq.call("x", return_metadata=True, model="bad-model")
         self.assertEqual(result["result"], {})
-        self.assertEqual(post.call_args_list[1].args[1]["model"], "good-model")
+        self.assertEqual(
+            post.call_args_list[1].args[1]["model"], "llama-3.3-70b-versatile"
+        )
 
     def test_enrich_quota_warning_preserves_attempts(self):
         conn = connect(":memory:")

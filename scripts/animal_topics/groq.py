@@ -11,6 +11,9 @@ _AUTH_DIAGNOSTIC_LOGGED = False
 _QUOTA_EXHAUSTED = False
 _MODEL_FALLBACK_LOGGED = False
 _ENRICH_MODEL_FALLBACK = False
+DEFAULT_ENRICH_MODEL = "openai/gpt-oss-20b"
+ENRICH_MODEL_FALLBACK = "llama-3.3-70b-versatile"
+_ENRICH_MODEL_UNAVAILABLE = False
 
 
 def call(
@@ -20,10 +23,21 @@ def call(
     model=None,
 ):
     global _AUTH_DIAGNOSTIC_LOGGED, _QUOTA_EXHAUSTED
-    global _ENRICH_MODEL_FALLBACK, _MODEL_FALLBACK_LOGGED
+    global _ENRICH_MODEL_FALLBACK, _MODEL_FALLBACK_LOGGED, _ENRICH_MODEL_UNAVAILABLE
     if _QUOTA_EXHAUSTED:
         result = {"result": None, "raw_content": "", "finish_reason": None,
                   "error": "quota_exhausted", "status": 429}
+        return result if return_metadata else None
+    if _ENRICH_MODEL_UNAVAILABLE and model == os.environ.get(
+        "GROQ_ENRICH_MODEL", DEFAULT_ENRICH_MODEL
+    ):
+        result = {
+            "result": None,
+            "raw_content": "",
+            "finish_reason": None,
+            "error": "quota_exhausted",
+            "status": 404,
+        }
         return result if return_metadata else None
     raw_key = os.environ.get("GROQ_API_KEY", "")
     key = raw_key.strip()
@@ -38,9 +52,11 @@ def call(
         return result if return_metadata else None
 
     request_headers = {"Authorization": "Bearer " + key}
+    enrich_model = os.environ.get("GROQ_ENRICH_MODEL", DEFAULT_ENRICH_MODEL)
+    is_enrichment = model == enrich_model
     requested_model = model or os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
-    if requested_model == os.environ.get("GROQ_ENRICH_MODEL", "llama-3.1-8b-instant") and _ENRICH_MODEL_FALLBACK:
-        requested_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+    if is_enrichment and _ENRICH_MODEL_FALLBACK:
+        requested_model = ENRICH_MODEL_FALLBACK
     body = {
         "model": requested_model,
         "temperature": 0.8,
@@ -66,15 +82,30 @@ def call(
         return result if return_metadata else None
     if (
         isinstance(response, dict)
-        and response.get("_http_error") in (400, 404)
-        and "model" in response.get("_raw_body", "").casefold()
-        and requested_model == os.environ.get("GROQ_ENRICH_MODEL", "llama-3.1-8b-instant")
+        and response.get("_http_error") == 404
+        and "model_not_found" in response.get("_raw_body", "").casefold()
+        and is_enrichment
     ):
+        if requested_model == ENRICH_MODEL_FALLBACK:
+            _ENRICH_MODEL_UNAVAILABLE = True
+            print(
+                f"enrich model {requested_model} not found, no fallback available",
+                file=sys.stderr,
+            )
+            result = {
+                "result": None,
+                "raw_content": response.get("_raw_body", ""),
+                "finish_reason": None,
+                "error": "quota_exhausted",
+                "status": 404,
+            }
+            return result if return_metadata else None
         _ENRICH_MODEL_FALLBACK = True
-        if not _MODEL_FALLBACK_LOGGED:
-            print("Groq enrichment model unavailable; using GROQ_MODEL", file=sys.stderr)
-            _MODEL_FALLBACK_LOGGED = True
-        return call(prompt, system, return_metadata, os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"))
+        print(
+            f"enrich model {requested_model} not found, falling back to {ENRICH_MODEL_FALLBACK}",
+            file=sys.stderr,
+        )
+        return call(prompt, system, return_metadata, enrich_model)
     if isinstance(response, dict) and response.get("_http_error") in (401, 403):
         if not _AUTH_DIAGNOSTIC_LOGGED:
             print(
