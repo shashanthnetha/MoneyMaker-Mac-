@@ -20,6 +20,7 @@ INSERT INTO "groups" VALUES(16,'Aerial','habitat');
 INSERT INTO "groups" VALUES(17,'Living','status');
 INSERT INTO "groups" VALUES(18,'Extinct','status');
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO "meta" VALUES('name_fix_v1','1');
 CREATE TABLE species(id INTEGER PRIMARY KEY AUTOINCREMENT,wikidata_qid TEXT UNIQUE NOT NULL,scientific_name TEXT,common_name TEXT NOT NULL,wikipedia_title TEXT NOT NULL,is_extinct INTEGER NOT NULL DEFAULT 0,sitelinks INTEGER NOT NULL DEFAULT 0,pageviews_90d INTEGER,popularity REAL,boost REAL NOT NULL DEFAULT 1.0,wiki_text TEXT,visual_keywords TEXT,footage_score INTEGER,enrichment_status TEXT NOT NULL DEFAULT 'pending',enrichment_attempts INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'active',disabled_reason TEXT,use_count INTEGER NOT NULL DEFAULT 0,last_used_at TEXT,discovered_at TEXT NOT NULL,source TEXT NOT NULL);
 CREATE TABLE species_groups(species_id INTEGER NOT NULL REFERENCES species(id),group_id INTEGER NOT NULL REFERENCES groups(id),PRIMARY KEY(species_id,group_id));
 CREATE TABLE topics(id INTEGER PRIMARY KEY AUTOINCREMENT,species_id INTEGER REFERENCES species(id),fact_id INTEGER REFERENCES facts(id),title TEXT NOT NULL,title_norm TEXT NOT NULL UNIQUE,status TEXT NOT NULL,manual INTEGER NOT NULL DEFAULT 0,legacy INTEGER NOT NULL DEFAULT 0,run_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
