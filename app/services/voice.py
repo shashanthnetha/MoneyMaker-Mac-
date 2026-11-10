@@ -8,6 +8,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -418,6 +419,7 @@ def tts(
     voice_file: str,
     voice_volume: float = 1.0,
 ) -> Union[SubMaker, None]:
+    text = normalize_script_for_tts_and_subtitles(text)
     if is_no_voice(voice_name):
         duration_seconds = estimate_no_voice_duration(text)
         if not generate_silent_audio(duration_seconds, voice_file):
@@ -1758,7 +1760,41 @@ def _format_text(text: str) -> str:
     text = text.replace(")", " ")
     text = text.replace("{", " ")
     text = text.replace("}", " ")
-    return utils.normalize_script_for_subtitle_matching(text)
+    return normalize_script_for_tts_and_subtitles(
+        utils.normalize_script_for_subtitle_matching(text)
+    )
+
+
+def normalize_script_for_tts_and_subtitles(text: str) -> str:
+    """Normalize script punctuation and whitespace before speech or matching."""
+    text = (text or "").replace("’", "'").replace("‘", "'")
+    text = text.replace("“", '"').replace("”", '"')
+
+    normalized = []
+    for index, character in enumerate(text):
+        normalized.append(character)
+        if character not in ".,!?;:" or index + 1 >= len(text):
+            continue
+
+        next_character = text[index + 1]
+        previous_character = text[index - 1] if index else ""
+        if not next_character.isalpha():
+            continue
+        if (
+            previous_character.isdigit()
+            and next_character.isalpha()
+            and character in ".,"
+        ):
+            continue
+        if (
+            character == "."
+            and previous_character.isupper()
+            and next_character.isupper()
+        ):
+            continue
+        normalized.append(" ")
+
+    return re.sub(r"\s+", " ", "".join(normalized)).strip()
 
 
 def _build_subtitle_formatter():
@@ -1991,6 +2027,47 @@ def create_subtitle(sub_maker: SubMaker, text: str, subtitle_file: str):
         _write_subtitle_items(sub_items, subtitle_file)
     except Exception as e:
         logger.error(f"failed, error: {str(e)}")
+
+
+def _split_subtitle_fallback_lines(text: str, max_words: int = 8) -> list[str]:
+    words = normalize_script_for_tts_and_subtitles(text).split()
+    return [
+        " ".join(words[index : index + max_words])
+        for index in range(0, len(words), max_words)
+    ]
+
+
+def create_subtitle_fallback(
+    text: str, audio_file: str, subtitle_file: str
+) -> bool:
+    """Create proportional subtitles from the normalized script and audio length."""
+    lines = _split_subtitle_fallback_lines(text)
+    duration = get_audio_duration(audio_file)
+    if not lines or duration <= 0:
+        logger.error("subtitle fallback could not determine a positive audio duration")
+        return False
+
+    total_characters = sum(len(line) for line in lines)
+    if total_characters <= 0:
+        return False
+
+    formatter = _build_subtitle_formatter()
+    items = []
+    start = 0.0
+    for index, line in enumerate(lines, start=1):
+        if index == len(lines):
+            end = duration
+        else:
+            end = duration * (
+                sum(len(previous) for previous in lines[:index]) / total_characters
+            )
+        end = max(start, min(end, duration))
+        items.append(
+            formatter(index, start * 10000000, end * 10000000, line)
+        )
+        start = end
+
+    return _write_subtitle_items(items, subtitle_file)
 
 
 def _get_audio_duration_from_submaker(sub_maker: SubMaker):

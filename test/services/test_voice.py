@@ -1172,6 +1172,42 @@ class TestVoiceService(unittest.TestCase):
         self.assertNotIn("这是_a_测试", subtitle_content)
         self.assertNotIn("00:00:00,000 --> 00:00:00,000", subtitle_content)
 
+    def test_normalize_script_repairs_production_text_without_changing_numbers(self):
+        text = "The rituals.In one documented case, herd’s behavior used 3.5 U.S. units."
+
+        self.assertEqual(
+            vs.normalize_script_for_tts_and_subtitles(text),
+            "The rituals. In one documented case, herd's behavior used 3.5 U.S. units.",
+        )
+
+    def test_subtitle_fallback_writes_proportional_srt_for_messy_script(self):
+        text = (
+            "The rituals.In one documented case, the herd’s behavior was unusual "
+            "and widely observed."
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            subtitle_file = Path(tmp_dir) / "subtitle.srt"
+            with patch.object(vs, "get_audio_duration", return_value=10.0):
+                created = vs.create_subtitle_fallback(
+                    text=text,
+                    audio_file=str(Path(tmp_dir) / "audio.mp3"),
+                    subtitle_file=str(subtitle_file),
+                )
+
+            self.assertTrue(created)
+            subtitle_content = subtitle_file.read_text(encoding="utf-8")
+            entries = vs.subtitles.file_to_subtitles(str(subtitle_file))
+
+        self.assertTrue(entries)
+        self.assertIn("rituals. In", subtitle_content)
+        self.assertIn("herd's", subtitle_content)
+        self.assertEqual(entries[0][0][0], 0.0)
+        self.assertEqual(entries[-1][0][1], 10.0)
+        for previous, current in zip(entries, entries[1:]):
+            self.assertLessEqual(previous[0][1], current[0][0])
+        self.assertTrue(all(len(item[1].split()) <= 8 for item in entries))
+
     def test_convert_rate_to_percent_signs_zero_rate(self):
         # Rates near but not exactly 1.0 round to 0 percent. edge-tts rejects
         # an unsigned "0%" (ValueError: Invalid rate '0%'), so the helper must

@@ -2,6 +2,7 @@ import math
 import os
 import re
 import socket
+import sys
 import threading
 import time
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
@@ -550,19 +551,31 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
         return ""
 
     if subtitle_provider == "edge":
-        voice.create_subtitle(
-            text=video_script, sub_maker=sub_maker, subtitle_file=subtitle_path
-        )
-        if not os.path.exists(subtitle_path):
-            # Edge 字幕偶尔会因为时间轴与文案无法匹配而没有产出文件。这里不能
-            # 自动切换到 Whisper，否则首次失败会在用户不知情的情况下下载数 GB
-            # 的模型。只有显式配置 Whisper 时才允许加载模型，Edge 失败则保留
-            # 无字幕视频并记录原因，避免意外的网络和磁盘开销。
-            logger.warning(
-                "edge subtitle generation did not produce a subtitle file; "
-                "skip subtitles without falling back to whisper"
+        try:
+            voice.create_subtitle(
+                text=video_script, sub_maker=sub_maker, subtitle_file=subtitle_path
             )
-            return ""
+        except Exception as exc:
+            logger.warning(f"edge subtitle generation failed: {exc}")
+
+        try:
+            edge_subtitles = (
+                subtitle.file_to_subtitles(subtitle_path)
+                if os.path.exists(subtitle_path)
+                else []
+            )
+        except Exception as exc:
+            logger.warning(f"edge subtitle file could not be read: {exc}")
+            edge_subtitles = []
+
+        if not edge_subtitles:
+            print("subtitle fallback: proportional timing used", file=sys.stderr)
+            if not voice.create_subtitle_fallback(
+                text=video_script,
+                audio_file=audio_file,
+                subtitle_file=subtitle_path,
+            ):
+                return ""
 
     if subtitle_provider == "whisper":
         subtitle.create(audio_file=audio_file, subtitle_file=subtitle_path)
